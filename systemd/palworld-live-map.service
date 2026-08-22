@@ -1,0 +1,15 @@
+[Unit]
+Description=Palworld live map server (local UI + REST proxy)
+After=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.local/share/palworld-live-map
+ExecStart=/usr/bin/python3 %h/.local/share/palworld-live-map/server.py
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

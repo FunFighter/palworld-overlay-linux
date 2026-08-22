@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Toggle the Palworld live-map overlay (Wayland layer-shell; draws over fullscreen).
+# Uses a pidfile rather than pgrep patterns, so it can never match its own caller.
+set -u
+PROJ="${PALWORLD_MAP_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/palworld-live-map}"
+PY="${PALWORLD_MAP_PYTHON:-/usr/bin/python3}"
+PORT="$(sed -n 's/.*"listen_port"[[:space:]]*:[[:space:]]*\([0-9]\+\).*/\1/p' "$PROJ/config.json" 2>/dev/null | head -1)"
+PORT="${PORT:-8765}"
+URL="http://127.0.0.1:$PORT"
+PIDFILE="${XDG_RUNTIME_DIR:-/tmp}/palworld-overlay.pid"
+
+if [ -f "$PIDFILE" ]; then
+  OLD=$(cat "$PIDFILE" 2>/dev/null || true)
+  if [ -n "${OLD:-}" ] && [ -d "/proc/$OLD" ] &&
+     tr '\0' ' ' < "/proc/$OLD/cmdline" 2>/dev/null | grep -q 'palworld-live-map'; then
+    kill "$OLD" 2>/dev/null
+    rm -f "$PIDFILE"
+    exit 0
+  fi
+  rm -f "$PIDFILE"
+fi
+
+if ! curl -sf -m 2 -o /dev/null "$URL/api/config"; then
+  if systemctl --user cat palworld-live-map.service >/dev/null 2>&1; then
+    systemctl --user start palworld-live-map.service
+  else
+    (cd "$PROJ" && setsid "$PY" server.py >/dev/null 2>&1 &)
+  fi
+  for _ in $(seq 1 30); do
+    curl -sf -m 1 -o /dev/null "$URL/api/config" && break
+    sleep 0.2
+  done
+fi
+
+echo $$ > "$PIDFILE"
+# GDK_BACKEND must be set before PyGObject initialises GTK, and WebKit's
+# accelerated path trips a KWin explicit-sync bug -- see docs/NOTES.md.
+exec env GDK_BACKEND=wayland WEBKIT_DISABLE_COMPOSITING_MODE=1 \
+  "$PY" "$PROJ/overlay.py" --url "$URL" "$@"

@@ -1,0 +1,379 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Palworld Live Map</title>
+<link rel="stylesheet" href="vendor/leaflet.css">
+<style>
+  :root { --bg:#0b0e13; --panel:rgba(14,18,25,.92); --line:#2a323d; --fg:#e6edf3;
+          --dim:#8b98a5; --me:#4ade80; --other:#60a5fa; --warn:#f87171; --acc:#2b8f57; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--fg);
+              font:13px/1.45 system-ui,-apple-system,Segoe UI,sans-serif;
+              overflow:hidden; user-select:none; }
+  #map { position:absolute; inset:0; background:#080a0e; }
+  .leaflet-container { background:#080a0e; outline:none; font:inherit; }
+
+  #hud { position:absolute; top:8px; left:8px; right:8px; z-index:600;
+         background:var(--panel); border:1px solid var(--line); border-radius:9px;
+         backdrop-filter:blur(9px); }
+  #bar { display:flex; align-items:center; gap:7px; padding:7px 9px; }
+  #bar b { font-size:12px; }
+  #dot { width:8px; height:8px; border-radius:50%; background:var(--warn); flex:none; }
+  #dot.ok { background:var(--me); }
+  .sp { margin-left:auto; }
+  button { background:#1a212d; color:var(--fg); border:1px solid var(--line);
+           border-radius:6px; padding:3px 8px; font-size:11.5px; cursor:pointer; }
+  button:hover { background:#222b3a; }
+  button.on { background:var(--acc); border-color:#37a869; }
+  .seg { display:flex; gap:0; }
+  .seg button { border-radius:0; }
+  .seg button:first-child { border-radius:6px 0 0 6px; }
+  .seg button:last-child { border-radius:0 6px 6px 0; border-left:none; }
+
+  #panels { display:none; padding:0 9px 9px; max-height:52vh; overflow:auto; }
+  #panels.show { display:block; }
+  #search { width:100%; background:#111823; color:var(--fg); border:1px solid var(--line);
+            border-radius:6px; padding:5px 8px; font-size:12px; margin-bottom:7px; }
+  details { border-top:1px solid var(--line); }
+  summary { cursor:pointer; padding:5px 2px; font-size:12px; display:flex;
+            align-items:center; gap:6px; }
+  summary::-webkit-details-marker { display:none; }
+  summary b { font-weight:600; }
+  summary .n { color:var(--dim); font-size:11px; margin-left:auto; }
+  .types { display:grid; grid-template-columns:1fr 1fr; gap:2px 8px; padding:2px 0 6px; }
+  label.t { display:flex; align-items:center; gap:5px; font-size:11.5px;
+            color:var(--dim); cursor:pointer; overflow:hidden; }
+  label.t input { accent-color:var(--acc); margin:0; flex:none; }
+  label.t span { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  label.t.on { color:var(--fg); }
+  label.t i { color:#5b6675; font-size:10.5px; flex:none; }
+
+  #foot { display:flex; align-items:center; gap:7px; padding:6px 9px;
+          border-top:1px solid var(--line); font-size:11.5px; color:var(--dim); }
+  #plist { display:flex; gap:9px; flex-wrap:wrap; }
+  .p { display:flex; align-items:center; gap:4px; }
+  .p i { width:7px; height:7px; border-radius:50%; flex:none; }
+  input[type=range] { width:70px; }
+
+  .me-marker,.other-marker { border-radius:50%; border:2px solid #05070a; }
+  .me-marker { background:var(--me); box-shadow:0 0 0 2px rgba(74,222,128,.35); }
+  .other-marker { background:var(--other); }
+  #hint { position:absolute; bottom:6px; left:8px; z-index:600;
+          font-size:10.5px; color:#67717f; }
+</style>
+
+<div id="map"></div>
+
+<div id="hud">
+  <div id="bar">
+    <span id="dot"></span><b>Palworld Live Map</b>
+    <span class="seg">
+      <button id="mAuto" class="on" title="Follow whichever map you are on">Auto</button>
+      <button id="mDef">Palpagos</button>
+      <button id="mTree">World Tree</button>
+    </span>
+    <span class="sp"></span>
+    <button id="follow" class="on" title="Keep the view centred on you">Follow</button>
+    <button id="fit" title="Zoom out to the whole map">Fit</button>
+    <button id="layers">Layers</button>
+    <span id="age" style="color:var(--dim);font-size:11px;min-width:34px;text-align:right">--</span>
+  </div>
+
+  <div id="panels">
+    <input id="search" placeholder="Filter types… (e.g. dungeon, chest, alpha)">
+    <div class="sp" style="display:flex;gap:5px;margin-bottom:7px">
+      <button id="pDg">Dungeons only</button>
+      <button id="pNone">Clear all</button>
+    </div>
+    <div id="groups"></div>
+  </div>
+
+  <div id="foot">
+    <div id="plist"></div>
+    <span class="sp"></span>
+    <span id="mapname" style="color:var(--dim)"></span>
+    <input type="range" id="op" min="30" max="100" value="100" title="Opacity">
+  </div>
+</div>
+<div id="hint">Alt + right-drag to move · Alt + Shift + right-drag to resize</div>
+
+<script src="vendor/leaflet.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const post = m => window.webkit?.messageHandlers?.overlay?.postMessage(JSON.stringify(m));
+const LS = "pwlm.v2";
+const saved = (() => { try { return JSON.parse(localStorage.getItem(LS)) || {}; } catch { return {}; } })();
+const prefs = Object.assign({ mapMode: "auto", enabled: null, follow: true, opacity: 100 }, saved);
+const savePrefs = () => localStorage.setItem(LS, JSON.stringify(prefs));
+
+let MAPS = {}, FILTERS = [], NODES = {}, TYPEMETA = {};
+let map = null, curMap = null, me = null, lastPlayers = [];
+const markerLayers = new Map();     // type -> layer
+let playerLayer = null, playerMarks = new Map();
+const canvasRenderer = () => L.canvas({ padding: 0.4 });
+
+// ---- default enabled set: the dungeon family -----------------------------
+const DEFAULT_ON = ["dungeon_random", "dungeon_sealed", "dimensional_rift"];
+const DEFAULT_ZOOM = 3;
+function fitAll() { if (map && curMap) map.fitBounds(MAPS[curMap].bounds); }
+let enabled = new Set(prefs.enabled || DEFAULT_ON);
+
+// ---- exact CRS from TH.GL's published per-map transformation --------------
+function crsFor(m) {
+  const t = m.transformation;
+  return L.extend({}, L.CRS.Simple, {
+    transformation: new L.Transformation(t[0], t[1], t[2], t[3]),
+  });
+}
+
+function inBounds(m, x, y) {
+  const [[laMin, lnMin], [laMax, lnMax]] = m.bounds;
+  return x >= laMin && x <= laMax && y >= lnMin && y <= lnMax;
+}
+
+// player raw (location_x, location_y) -> latlng in the map's own frame
+const toLatLng = (x, y) => L.latLng(x, y);
+
+function spriteIcon(meta, px) {
+  const ic = meta && meta.icon;
+  if (!ic) {
+    return L.divIcon({ className: "", iconSize: [8, 8],
+      html: `<div style="width:8px;height:8px;border-radius:50%;background:#94a3b8;opacity:.9"></div>` });
+  }
+  const s = px / ic.width;
+  return L.divIcon({
+    className: "", iconSize: [px, px], iconAnchor: [px / 2, px / 2],
+    html: `<div style="width:${px}px;height:${px}px;position:relative;overflow:hidden">
+      <div style="position:absolute;width:${ic.width}px;height:${ic.height}px;
+        background:url(data/icons.webp) -${ic.x}px -${ic.y}px;
+        transform:scale(${s});transform-origin:0 0"></div></div>`,
+  });
+}
+
+// ---- map lifecycle -------------------------------------------------------
+function buildMap(id) {
+  if (map) { map.remove(); map = null; markerLayers.clear(); playerMarks.clear(); }
+  const m = MAPS[id];
+  curMap = id;
+  $("mapname").textContent = m.label;
+
+  map = L.map("map", {
+    crs: crsFor(m), zoomControl: false, attributionControl: false,
+    minZoom: m.minZoom, maxZoom: m.maxZoom, zoom: 0,
+    center: L.latLng((m.bounds[0][0] + m.bounds[1][0]) / 2,
+                     (m.bounds[0][1] + m.bounds[1][1]) / 2),
+    preferCanvas: true, zoomSnap: 0.25, wheelPxPerZoomLevel: 90,
+  });
+  L.control.zoom({ position: "bottomright" }).addTo(map);
+  L.tileLayer(m.tileUrl, {
+    tileSize: m.tileSize, minNativeZoom: m.minNativeZoom,
+    maxNativeZoom: m.maxNativeZoom, minZoom: m.minZoom, maxZoom: m.maxZoom,
+    bounds: m.bounds, noWrap: true, keepBuffer: 2,
+  }).addTo(map);
+  fitAll();
+  // opening zoomed on the player is what an overlay is actually for; the whole
+  // island only wastes screen while you are running around one corner of it
+  const mine = lastPlayers.find(p => p.name === me);
+  if (mine && inBounds(m, mine.location_x, mine.location_y))
+    map.setView(toLatLng(mine.location_x, mine.location_y), DEFAULT_ZOOM);
+  const pad = (m.bounds[1][0] - m.bounds[0][0]) * 0.05;
+  map.setMaxBounds([[m.bounds[0][0] - pad, m.bounds[0][1] - pad],
+                    [m.bounds[1][0] + pad, m.bounds[1][1] + pad]]);
+  playerLayer = L.layerGroup().addTo(map);
+  renderTypes();
+  drawPlayers(lastPlayers, true);
+}
+
+function typeCount(id) { return (NODES[curMap]?.types?.[id] || []).length; }
+
+function renderTypes() {
+  for (const [t, l] of markerLayers) { map.removeLayer(l); }
+  markerLayers.clear();
+  const types = NODES[curMap]?.types || {};
+  const rend = canvasRenderer();
+  for (const t of enabled) {
+    const pts = types[t];
+    if (!pts || !pts.length) continue;
+    const meta = TYPEMETA[t];
+    const big = pts.length > 200;
+    const layer = L.layerGroup();
+    for (const p of pts) {
+      const ll = toLatLng(p[0], p[1]);
+      const mk = big
+        ? L.circleMarker(ll, { renderer: rend, radius: 3, weight: 1,
+            color: "#0b0e13", fillColor: "#f0b429", fillOpacity: .95 })
+        : L.marker(ll, { icon: spriteIcon(meta, Math.round(13 * (meta?.size || 1))) });
+      mk.bindTooltip(meta?.label || t, { direction: "top" });
+      layer.addLayer(mk);
+    }
+    layer.addTo(map);
+    markerLayers.set(t, layer);
+  }
+}
+
+// ---- live players --------------------------------------------------------
+function drawPlayers(players, force) {
+  if (!map) return;
+  const seen = new Set();
+  for (const p of players) {
+    if (!inBounds(MAPS[curMap], p.location_x, p.location_y)) continue;
+    const isMe = p.name === me;
+    const ll = toLatLng(p.location_x, p.location_y);
+    seen.add(p.name);
+    let mk = playerMarks.get(p.name);
+    if (!mk) {
+      const s = isMe ? 16 : 12;
+      mk = L.marker(ll, { zIndexOffset: isMe ? 1000 : 500, icon: L.divIcon({
+        className: "", iconSize: [s, s], iconAnchor: [s / 2, s / 2],
+        html: `<div class="${isMe ? "me-marker" : "other-marker"}"
+                 style="width:${s}px;height:${s}px"></div>` }) })
+        .bindTooltip(p.name, { direction: "top", offset: [0, -7] }).addTo(playerLayer);
+      playerMarks.set(p.name, mk);
+    } else mk.setLatLng(ll);
+    if (isMe && prefs.follow) {
+      if (map.getZoom() < DEFAULT_ZOOM) map.setView(ll, DEFAULT_ZOOM);
+      else map.panTo(ll, { animate: !force, duration: .35 });
+    }
+  }
+  for (const [n, mk] of playerMarks)
+    if (!seen.has(n)) { playerLayer.removeLayer(mk); playerMarks.delete(n); }
+}
+
+function mapForPlayer(p) {
+  if (!p) return null;
+  // tree first: it is the more specific box
+  for (const id of ["tree", "default"])
+    if (MAPS[id] && inBounds(MAPS[id], p.location_x, p.location_y)) return id;
+  return null;
+}
+
+async function tick() {
+  let d;
+  try { d = await (await fetch("/api/players")).json(); }
+  catch { $("dot").classList.remove("ok"); return; }
+  me = d.me;
+  lastPlayers = d.players || [];
+  $("dot").classList.toggle("ok", !d.error);
+  $("age").textContent = d.error ? "offline"
+    : d.ts ? `${Math.max(0, Date.now() / 1000 - d.ts).toFixed(1)}s` : "--";
+
+  const mine = lastPlayers.find(p => p.name === me);
+  if (prefs.mapMode === "auto") {
+    const want = mapForPlayer(mine);
+    if (want && want !== curMap) buildMap(want);
+  }
+  drawPlayers(lastPlayers);
+
+  $("plist").innerHTML = lastPlayers.map(p => {
+    const on = inBounds(MAPS[curMap], p.location_x, p.location_y);
+    return `<span class="p"><i style="background:${p.name === me ? "var(--me)" : "var(--other)"};
+      opacity:${on ? 1 : .35}"></i>${p.name} <span style="color:var(--dim)">Lv${p.level}</span></span>`;
+  }).join("") || '<span style="color:var(--dim)">nobody online</span>';
+}
+
+// ---- layers UI ----------------------------------------------------------
+function buildGroups() {
+  const host = $("groups");
+  host.innerHTML = "";
+  const q = $("search").value.trim().toLowerCase();
+  for (const g of FILTERS) {
+    const vals = g.values.filter(v => typeCount(v.id) > 0 &&
+      (!q || v.label.toLowerCase().includes(q) || v.id.toLowerCase().includes(q)));
+    if (!vals.length) continue;
+    const nOn = vals.filter(v => enabled.has(v.id)).length;
+    const det = document.createElement("details");
+    if (q || g.group === "locations") det.open = true;
+    det.innerHTML = `<summary><b>${g.label}</b>
+      <span class="n">${nOn ? nOn + " on / " : ""}${vals.length}</span></summary>`;
+    const wrap = document.createElement("div");
+    wrap.className = "types";
+    for (const v of vals) {
+      const l = document.createElement("label");
+      l.className = "t" + (enabled.has(v.id) ? " on" : "");
+      l.innerHTML = `<input type="checkbox" ${enabled.has(v.id) ? "checked" : ""}>
+        <span>${v.label}</span><i>${typeCount(v.id)}</i>`;
+      l.querySelector("input").onchange = e => {
+        e.target.checked ? enabled.add(v.id) : enabled.delete(v.id);
+        l.classList.toggle("on", e.target.checked);
+        prefs.enabled = [...enabled]; savePrefs();
+        renderTypes(); buildGroups();
+      };
+      wrap.appendChild(l);
+    }
+    det.appendChild(wrap);
+    host.appendChild(det);
+  }
+}
+
+// ---- controls -----------------------------------------------------------
+function setMode(m) {
+  prefs.mapMode = m; savePrefs();
+  $("mAuto").classList.toggle("on", m === "auto");
+  $("mDef").classList.toggle("on", m === "default");
+  $("mTree").classList.toggle("on", m === "tree");
+  if (m === "default" || m === "tree") { if (curMap !== m) buildMap(m); }
+  else { const w = mapForPlayer(lastPlayers.find(p => p.name === me)); if (w && w !== curMap) buildMap(w); }
+}
+$("mAuto").onclick = () => setMode("auto");
+$("mDef").onclick  = () => setMode("default");
+$("mTree").onclick = () => setMode("tree");
+$("follow").onclick = e => { prefs.follow = !prefs.follow; savePrefs();
+  e.target.classList.toggle("on", prefs.follow); };
+$("fit").onclick = () => { prefs.follow = false; savePrefs();
+  $("follow").classList.remove("on"); fitAll(); };
+$("layers").onclick = e => { const s = $("panels").classList.toggle("show");
+  e.target.classList.toggle("on", s); if (s) buildGroups(); };
+$("search").oninput = buildGroups;
+$("pDg").onclick = () => { enabled = new Set(DEFAULT_ON); prefs.enabled = [...enabled];
+  savePrefs(); renderTypes(); buildGroups(); };
+$("pNone").onclick = () => { enabled = new Set(); prefs.enabled = [];
+  savePrefs(); renderTypes(); buildGroups(); };
+$("op").oninput = e => { prefs.opacity = +e.target.value; savePrefs();
+  $("map").style.opacity = prefs.opacity / 100; };
+
+// ---- Alt + right-drag to move, Alt+Shift+right-drag to resize ------------
+(() => {
+  let mode = null, w0 = 0, h0 = 0;
+  addEventListener("contextmenu", e => { if (e.altKey) e.preventDefault(); }, true);
+  addEventListener("mousedown", e => {
+    if (e.button !== 2 || !e.altKey) return;
+    e.preventDefault(); e.stopPropagation();
+    mode = e.shiftKey ? "resize" : "move";
+    w0 = innerWidth; h0 = innerHeight;
+    document.body.style.cursor = mode === "move" ? "grabbing" : "nwse-resize";
+  }, true);
+  addEventListener("mousemove", e => {
+    if (!mode) return;
+    e.preventDefault();
+    // movementX/Y are raw pointer deltas, so they stay correct even though the
+    // window itself is moving underneath the cursor.
+    if (mode === "move") post({ action: "drag", dx: e.movementX, dy: e.movementY });
+    else { w0 += e.movementX; h0 += e.movementY;
+           post({ action: "resize", w: Math.round(w0), h: Math.round(h0) }); }
+  }, true);
+  addEventListener("mouseup", e => {
+    if (!mode) return;
+    if (mode === "move") post({ action: "dragEnd" });
+    mode = null; document.body.style.cursor = "";
+  }, true);
+})();
+
+// ---- boot ---------------------------------------------------------------
+(async () => {
+  MAPS = await (await fetch("data/maps.json")).json();
+  FILTERS = await (await fetch("data/filters.json")).json();
+  for (const g of FILTERS) for (const v of g.values) TYPEMETA[v.id] = v;
+  for (const id of Object.keys(MAPS))
+    NODES[id] = await (await fetch(`data/nodes.${id}.json`)).json();
+
+  $("follow").classList.toggle("on", prefs.follow);
+  $("op").value = prefs.opacity;
+  $("map").style.opacity = prefs.opacity / 100;
+
+  buildMap(MAPS.default ? "default" : Object.keys(MAPS)[0]);
+  setMode(prefs.mapMode);
+  await tick();
+  let cfg = {};
+  try { cfg = await (await fetch("/api/config")).json(); } catch { /* defaults */ }
+  setInterval(tick, Math.max(400, cfg.poll_ms || 1000));
+})();
+</script>

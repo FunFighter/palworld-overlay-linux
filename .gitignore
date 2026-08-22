@@ -1,0 +1,21 @@
+# real credentials
+config.json
+
+# runtime state
+window.json
+*.pid
+
+# fetched third-party assets (see tools/fetch_data.mjs and scripts/install.sh)
+data/
+vendor/leaflet.js
+vendor/leaflet.css
+vendor/*.png
+tools/node_modules/
+tools/package-lock.json
+
+# built decompressor (see tools/ooz/README.md)
+tools/ooz/*.so
+tools/ooz/ooz/
+
+__pycache__/
+*.pyc

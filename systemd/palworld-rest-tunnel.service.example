@@ -1,0 +1,28 @@
+# Only needed when the REST API is not reachable from this machine -- e.g. it is
+# bound inside a Docker container, or lives on another host.
+#
+#   cp palworld-rest-tunnel.service.example \
+#      ~/.config/systemd/user/palworld-rest-tunnel.service
+#   $EDITOR ~/.config/systemd/user/palworld-rest-tunnel.service
+#   ssh-copy-id -i ~/.ssh/id_ed25519.pub USER@SERVER_HOST   # key auth required
+#   systemctl --user enable --now palworld-rest-tunnel
+#
+# CONTAINER_IP is the container's address on the Docker bridge; find it with
+#   docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' palworld-server
+# If the REST port is published on the host instead, use 127.0.0.1.
+
+[Unit]
+Description=SSH tunnel to the Palworld dedicated-server REST API
+After=network-online.target
+Before=palworld-live-map.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes \
+  -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+  -L 127.0.0.1:8212:CONTAINER_IP:8212 USER@SERVER_HOST
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

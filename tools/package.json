@@ -1,0 +1,2 @@
+{ "name": "palworld-live-map-tools", "private": true, "type": "module",
+  "dependencies": { "cbor-x": "^1.6.0" } }

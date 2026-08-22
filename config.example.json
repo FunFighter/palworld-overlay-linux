@@ -1,0 +1,8 @@
+{
+  "rest_url": "http://127.0.0.1:8212",
+  "rest_user": "admin",
+  "rest_pass": "CHANGE_ME",
+  "me": "YourInGameCharacterName",
+  "listen_port": 8765,
+  "poll_ms": 1000
+}
