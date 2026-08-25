@@ -16,12 +16,19 @@ this is a native replacement built from the pieces Linux actually gives you.
 
 - **Live position** for you and everyone else online, updating about once a
   second, with a marker on the map and a player list
-- **Two overworld maps** — Palpagos Island and The World Tree — with `Auto`
-  switching to whichever one you are standing on
-- **All 493 location types** in 10 groups: 155 dungeons, 12 sealed dungeons,
+- **All 164 maps** — Palpagos Island, The World Tree, and every dungeon
+  interior. `Auto` picks the most specific map containing your coordinates, so
+  **walking into a dungeon switches the overlay to that dungeon's own map** and
+  leaving switches back
+- **All 504 location types** in 12 groups: 155 dungeons, 12 sealed dungeons,
   8 dimensional rifts, 137 fast travels, 106 hackable towers, 140 Lifmunk
   effigies, 1459 chests, 86 Alpha Pals, ore veins, fishing spots, NPCs…
   Dungeons are on by default; there is a search box for the rest
+- **Navigation readouts** — distance and compass bearing to the nearest
+  enabled marker, and to a waypoint you drop with Shift+click
+- **Live server status** — in-game day, players online, base camps, server FPS,
+  frame time and uptime
+- **Minimap mode** — one click shrinks it to a compact 340×340 follow-cam
 - **A true overlay**, not a second window: it draws above fullscreen, and
   keyboard input keeps going to the game until you click the map
 - **Alt + right-drag** to move it, **Alt + Shift + right-drag** to resize
@@ -169,7 +176,18 @@ systemctl --user enable --now palworld-rest-tunnel
 | `Follow` | keep the view centred on you |
 | `Fit` | zoom out to the whole map |
 | `Layers` | type toggles, with search and a "Dungeons only" preset |
+| `Mini` | compact 340×340 minimap mode |
+| **Shift + click** | drop a waypoint; the nav row shows distance and bearing |
 | opacity slider | bottom-right of the panel |
+
+The nav row also shows the nearest enabled marker with a bearing arrow — click
+it to jump the view there — plus your raw coordinates and a metre scale bar.
+
+If your coordinates fall outside every known map you get an **off-map** badge
+(usually a loading screen or an unmapped instance). If you are inside the map
+bounds but past the edge of the drawn tiles — far out to sea, or high above it —
+you get **off the drawn map** with the distance back to the nearest feature,
+rather than an unexplained black square.
 
 Position, size and layer choices persist across restarts.
 
@@ -210,9 +228,12 @@ world and will put your marker off-map.
 cd ~/.local/share/palworld-live-map/tools && node fetch_data.mjs
 ```
 
-Add map ids as arguments to pull more than the two overworlds
-(`node fetch_data.mjs default,tree,dg_grass_09`); there are 164 in total,
-including every dungeon interior.
+That pulls **all 164 maps** (about 4 MB and a minute or two). Pass a comma
+separated list to limit it — `node fetch_data.mjs default,tree` — though you
+lose dungeon-interior switching if you do.
+
+Node data is loaded lazily at runtime: only the map you are currently looking
+at is fetched into the page, so 164 maps costs nothing at startup.
 
 ## Troubleshooting
 

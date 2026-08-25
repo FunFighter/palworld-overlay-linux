@@ -59,6 +59,22 @@
   .other-marker { background:var(--other); }
   #hint { position:absolute; bottom:6px; left:8px; z-index:600;
           font-size:10.5px; color:#67717f; }
+
+  #nav, #status { display:flex; align-items:center; gap:9px; padding:5px 9px;
+                  border-top:1px solid var(--line); font-size:11.5px; }
+  #status { font-size:11px; color:var(--dim); }
+  .kv { display:flex; align-items:center; gap:4px; white-space:nowrap; }
+  .kv b { color:var(--fg); font-weight:600; }
+  .kv.dimmed { color:var(--dim); }
+  .arrow { color:var(--me); font-size:13px; line-height:1; }
+  .wp-dot { width:11px; height:11px; border-radius:50%; background:#fbbf24;
+            border:2px solid #05070a; box-shadow:0 0 0 2px rgba(251,191,36,.35); }
+  #scale { position:absolute; left:10px; bottom:24px; z-index:600;
+           font:10.5px ui-monospace,monospace; color:#c6d0da; pointer-events:none;
+           text-shadow:0 1px 2px #000; }
+  #scale div { border:1px solid #c6d0da; border-top:none; height:5px; }
+  body.mini #panels, body.mini #status, body.mini #foot, body.mini #hint { display:none !important; }
+  body.mini #bar b, body.mini .seg, body.mini #layers, body.mini #fit { display:none; }
 </style>
 
 <div id="map"></div>
@@ -75,6 +91,7 @@
     <button id="follow" class="on" title="Keep the view centred on you">Follow</button>
     <button id="fit" title="Zoom out to the whole map">Fit</button>
     <button id="layers">Layers</button>
+    <button id="mini" title="Compact minimap mode">Mini</button>
     <span id="age" style="color:var(--dim);font-size:11px;min-width:34px;text-align:right">--</span>
   </div>
 
@@ -87,6 +104,32 @@
     <div id="groups"></div>
   </div>
 
+  <div id="nav">
+    <span class="kv" id="wpBox" style="display:none">
+      <span class="arrow" id="wpArrow">↑</span>
+      <span>Waypoint <b id="wpDist">--</b> <span id="wpDir" class="kv dimmed"></span></span>
+      <button id="wpClear" title="Clear waypoint">&times;</button>
+    </span>
+    <span class="kv" id="nearBox">
+      <span class="arrow" id="nearArrow">↑</span>
+      <span id="nearName" class="dimmed">nearest --</span>
+      <b id="nearDist">--</b>
+    </span>
+    <span class="kv" id="offmap" style="display:none;color:var(--warn)"
+          title="Your coordinates are not inside any known map - usually a loading screen or an unmapped instance">off-map</span>
+    <span class="sp"></span>
+    <span class="kv dimmed" id="coords" title="Raw world coordinates">--</span>
+  </div>
+
+  <div id="status">
+    <span class="kv">Day <b id="stDay">--</b></span>
+    <span class="kv"><b id="stPlayers">--</b> online</span>
+    <span class="kv"><b id="stCamps">--</b> camps</span>
+    <span class="kv" id="stFpsBox"><b id="stFps">--</b> fps</span>
+    <span class="sp"></span>
+    <span class="kv dimmed" id="stName">--</span>
+  </div>
+
   <div id="foot">
     <div id="plist"></div>
     <span class="sp"></span>
@@ -94,7 +137,8 @@
     <input type="range" id="op" min="30" max="100" value="100" title="Opacity">
   </div>
 </div>
-<div id="hint">Alt + right-drag to move · Alt + Shift + right-drag to resize</div>
+<div id="scale"><span id="scaleTxt">--</span><div id="scaleBar" style="width:80px"></div></div>
+<div id="hint">Alt + right-drag to move · Alt + Shift + right-drag to resize · Shift + click to set a waypoint</div>
 
 <script src="vendor/leaflet.js"></script>
 <script>
@@ -102,11 +146,12 @@ const $ = id => document.getElementById(id);
 const post = m => window.webkit?.messageHandlers?.overlay?.postMessage(JSON.stringify(m));
 const LS = "pwlm.v2";
 const saved = (() => { try { return JSON.parse(localStorage.getItem(LS)) || {}; } catch { return {}; } })();
-const prefs = Object.assign({ mapMode: "auto", enabled: null, follow: true, opacity: 100 }, saved);
+const prefs = Object.assign({ mapMode: "auto", enabled: null, follow: true,
+                             opacity: 100, waypoint: null, mini: false }, saved);
 const savePrefs = () => localStorage.setItem(LS, JSON.stringify(prefs));
 
 let MAPS = {}, FILTERS = [], NODES = {}, TYPEMETA = {};
-let map = null, curMap = null, me = null, lastPlayers = [];
+let map = null, curMap = null, me = null, lastPlayers = [], switching = false;
 const markerLayers = new Map();     // type -> layer
 let playerLayer = null, playerMarks = new Map();
 const canvasRenderer = () => L.canvas({ padding: 0.4 });
@@ -114,10 +159,35 @@ const canvasRenderer = () => L.canvas({ padding: 0.4 });
 // ---- default enabled set: the dungeon family -----------------------------
 const DEFAULT_ON = ["dungeon_random", "dungeon_sealed", "dimensional_rift"];
 const DEFAULT_ZOOM = 3;
+const MINI_ZOOM = 4;
+
+// Raw game units are centimetres, and on these maps +x is north, +y is east.
+const dist2d = (ax, ay, bx, by) => Math.hypot(bx - ax, by - ay);
+const fmtDist = u => u >= 100000 ? (u / 100000).toFixed(2) + " km"
+                   : u >= 100 ? Math.round(u / 100) + " m"
+                   : Math.round(u) + " cm";
+const COMPASS = ["N","NE","E","SE","S","SW","W","NW"];
+function bearing(ax, ay, bx, by) {          // degrees, 0 = north, 90 = east
+  const d = Math.atan2(by - ay, bx - ax) * 180 / Math.PI;
+  return (d + 360) % 360;
+}
+const compass8 = deg => COMPASS[Math.round(deg / 45) % 8];
+function fmtUptime(sec) {
+  if (!sec && sec !== 0) return "--";
+  const d = Math.floor(sec / 86400), h = Math.floor(sec % 86400 / 3600),
+        m = Math.floor(sec % 3600 / 60);
+  return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m`;
+}
 function fitAll() { if (map && curMap) map.fitBounds(MAPS[curMap].bounds); }
 let enabled = new Set(prefs.enabled || DEFAULT_ON);
 
 // ---- exact CRS from TH.GL's published per-map transformation --------------
+async function ensureNodes(id) {
+  if (NODES[id]) return NODES[id];
+  NODES[id] = await (await fetch(`data/nodes.${id}.json`)).json();
+  return NODES[id];
+}
+
 function crsFor(m) {
   const t = m.transformation;
   return L.extend({}, L.CRS.Simple, {
@@ -150,7 +220,8 @@ function spriteIcon(meta, px) {
 }
 
 // ---- map lifecycle -------------------------------------------------------
-function buildMap(id) {
+async function buildMap(id) {
+  await ensureNodes(id);
   if (map) { map.remove(); map = null; markerLayers.clear(); playerMarks.clear(); }
   const m = MAPS[id];
   curMap = id;
@@ -179,6 +250,14 @@ function buildMap(id) {
   map.setMaxBounds([[m.bounds[0][0] - pad, m.bounds[0][1] - pad],
                     [m.bounds[1][0] + pad, m.bounds[1][1] + pad]]);
   playerLayer = L.layerGroup().addTo(map);
+  wpLayer = L.layerGroup().addTo(map);
+  drawWaypoint();
+  map.on("zoomend moveend", updateScale);
+  map.on("click", ev => {
+    if (!ev.originalEvent.shiftKey) return;
+    setWaypoint(ev.latlng.lat, ev.latlng.lng);   // lat = x, lng = y
+  });
+  updateScale();
   renderTypes();
   drawPlayers(lastPlayers, true);
 }
@@ -208,6 +287,71 @@ function renderTypes() {
     layer.addTo(map);
     markerLayers.set(t, layer);
   }
+}
+
+// ---- waypoint ------------------------------------------------------------
+let wpLayer = null, wpMarker = null, wpLine = null;
+
+function drawWaypoint() {
+  if (!wpLayer) return;
+  wpLayer.clearLayers();
+  wpMarker = wpLine = null;
+  const w = prefs.waypoint;
+  $("wpBox").style.display = w && w.map === curMap ? "" : "none";
+  if (!w || w.map !== curMap) return;
+  wpMarker = L.marker(toLatLng(w.x, w.y), { icon: L.divIcon({
+    className: "", iconSize: [11, 11], iconAnchor: [5.5, 5.5],
+    html: '<div class="wp-dot"></div>' }) })
+    .bindTooltip("Waypoint", { direction: "top", offset: [0, -7] });
+  wpLayer.addLayer(wpMarker);
+  wpLine = L.polyline([], { color: "#fbbf24", weight: 1.5,
+                            dashArray: "5 5", opacity: .75 });
+  wpLayer.addLayer(wpLine);
+}
+
+function setWaypoint(x, y) {
+  prefs.waypoint = { map: curMap, x, y };
+  savePrefs();
+  drawWaypoint();
+}
+
+// ---- nearest enabled point of interest -----------------------------------
+function nearestPoi(px, py) {
+  const types = NODES[curMap]?.types || {};
+  let best = null;
+  for (const t of enabled) {
+    const pts = types[t];
+    if (!pts) continue;
+    for (const q of pts) {
+      const d = dist2d(px, py, q[0], q[1]);
+      if (!best || d < best.d) best = { d, x: q[0], y: q[1], type: t };
+    }
+  }
+  return best;
+}
+
+// Distance to the nearest mapped feature of any type. The drawn map ends well
+// inside the tile bounds, so this is what distinguishes "out past the edge of
+// the map" from "somewhere the map simply has nothing marked".
+const OFFMAP_UNITS = 120000;      // 1.2 km
+function nearestAny(px, py) {
+  const types = NODES[curMap]?.types || {};
+  let best = Infinity;
+  for (const pts of Object.values(types))
+    for (const q of pts) {
+      const d = dist2d(px, py, q[0], q[1]);
+      if (d < best) best = d;
+    }
+  return best;
+}
+
+// ---- scale bar -----------------------------------------------------------
+function updateScale() {
+  if (!map) return;
+  const a = map.containerPointToLatLng([0, 0]);
+  const b = map.containerPointToLatLng([80, 0]);
+  const units = Math.abs(b.lng - a.lng);       // lng is the +y / east axis
+  $("scaleTxt").textContent = fmtDist(units);
 }
 
 // ---- live players --------------------------------------------------------
@@ -240,11 +384,14 @@ function drawPlayers(players, force) {
 
 function mapForPlayer(p) {
   if (!p) return null;
-  // tree first: it is the more specific box
-  for (const id of ["tree", "default"])
-    if (MAPS[id] && inBounds(MAPS[id], p.location_x, p.location_y)) return id;
-  return null;
+  let best = null;
+  for (const id in MAPS) {
+    if (!inBounds(MAPS[id], p.location_x, p.location_y)) continue;
+    if (!best || MAPS[id].area < MAPS[best].area) best = id;
+  }
+  return best;                 // smallest containing map = the instance you are in
 }
+const isOverworld = id => id === "default" || id === "tree";
 
 async function tick() {
   let d;
@@ -257,17 +404,88 @@ async function tick() {
     : d.ts ? `${Math.max(0, Date.now() / 1000 - d.ts).toFixed(1)}s` : "--";
 
   const mine = lastPlayers.find(p => p.name === me);
-  if (prefs.mapMode === "auto") {
-    const want = mapForPlayer(mine);
-    if (want && want !== curMap) buildMap(want);
+  const where = mapForPlayer(mine);
+  if (mine && !where) {
+    const b = $("offmap");
+    b.style.display = ""; b.textContent = "off-map";
+    b.title = "Your coordinates are not inside any of the 164 known maps - "
+            + "usually a loading screen or an unmapped instance.";
+  }
+  if (prefs.mapMode === "auto" && where && where !== curMap && !switching) {
+    switching = true;
+    try { await buildMap(where); } finally { switching = false; }
   }
   drawPlayers(lastPlayers);
+
+  updateNav(mine);
 
   $("plist").innerHTML = lastPlayers.map(p => {
     const on = inBounds(MAPS[curMap], p.location_x, p.location_y);
     return `<span class="p"><i style="background:${p.name === me ? "var(--me)" : "var(--other)"};
       opacity:${on ? 1 : .35}"></i>${p.name} <span style="color:var(--dim)">Lv${p.level}</span></span>`;
   }).join("") || '<span style="color:var(--dim)">nobody online</span>';
+}
+
+function updateNav(mine) {
+  const has = mine && inBounds(MAPS[curMap], mine.location_x, mine.location_y);
+  $("coords").textContent = has
+    ? `${Math.round(mine.location_x)}, ${Math.round(mine.location_y)}` : "--";
+
+  // waypoint distance + heading
+  const w = prefs.waypoint;
+  if (has && w && w.map === curMap) {
+    const d = dist2d(mine.location_x, mine.location_y, w.x, w.y);
+    const b = bearing(mine.location_x, mine.location_y, w.x, w.y);
+    $("wpDist").textContent = fmtDist(d);
+    $("wpDir").textContent = compass8(b);
+    $("wpArrow").style.transform = `rotate(${b}deg)`;
+    if (wpLine) wpLine.setLatLngs([toLatLng(mine.location_x, mine.location_y),
+                                   toLatLng(w.x, w.y)]);
+  }
+
+  // out past the drawn edge of the map?
+  const far = has ? nearestAny(mine.location_x, mine.location_y) : 0;
+  const off = has && far > OFFMAP_UNITS;
+  const badge = $("offmap");
+  if (off) {
+    badge.style.display = "";
+    badge.textContent = `off the drawn map · ${fmtDist(far)} to nearest feature`;
+    badge.title = "The map tiles end here. Your position is correct; there is "
+                + "simply nothing drawn this far out.";
+  } else if (badge.textContent === "off-map") {
+    // left as-is: the no-containing-map case is set in tick()
+  } else {
+    badge.style.display = "none";
+  }
+
+  // nearest enabled marker
+  const n = has ? nearestPoi(mine.location_x, mine.location_y) : null;
+  if (n) {
+    const b = bearing(mine.location_x, mine.location_y, n.x, n.y);
+    $("nearName").textContent = TYPEMETA[n.type]?.label || n.type;
+    $("nearDist").textContent = fmtDist(n.d);
+    $("nearArrow").style.transform = `rotate(${b}deg)`;
+    $("nearBox").style.display = "";
+    $("nearBox").onclick = () => { prefs.follow = false; savePrefs();
+      $("follow").classList.remove("on"); map.setView(toLatLng(n.x, n.y), Math.max(map.getZoom(), 4)); };
+  } else {
+    $("nearBox").style.display = "none";
+  }
+}
+
+async function tickStatus() {
+  let d;
+  try { d = await (await fetch("/api/status")).json(); } catch { return; }
+  const m = d.metrics, i = d.info;
+  if (m) {
+    $("stDay").textContent = m.days ?? "--";
+    $("stPlayers").textContent = `${m.currentplayernum}/${m.maxplayernum}`;
+    $("stCamps").textContent = m.basecampnum ?? "--";
+    $("stFps").textContent = Math.round(m.serverfps ?? 0);
+    $("stFpsBox").title = `avg ${(m.serverfpsaverage ?? 0).toFixed(1)} fps, `
+      + `frame ${(m.serverframetime ?? 0).toFixed(1)} ms, up ${fmtUptime(m.uptime)}`;
+  }
+  if (i) $("stName").textContent = `${i.servername} · ${i.version}`;
 }
 
 // ---- layers UI ----------------------------------------------------------
@@ -305,13 +523,17 @@ function buildGroups() {
 }
 
 // ---- controls -----------------------------------------------------------
-function setMode(m) {
+async function setMode(m) {
   prefs.mapMode = m; savePrefs();
   $("mAuto").classList.toggle("on", m === "auto");
   $("mDef").classList.toggle("on", m === "default");
   $("mTree").classList.toggle("on", m === "tree");
-  if (m === "default" || m === "tree") { if (curMap !== m) buildMap(m); }
-  else { const w = mapForPlayer(lastPlayers.find(p => p.name === me)); if (w && w !== curMap) buildMap(w); }
+  if (m === "default" || m === "tree") {
+    if (curMap !== m) await buildMap(m);
+  } else {
+    const w = mapForPlayer(lastPlayers.find(p => p.name === me));
+    if (w && w !== curMap) await buildMap(w);
+  }
 }
 $("mAuto").onclick = () => setMode("auto");
 $("mDef").onclick  = () => setMode("default");
@@ -320,6 +542,24 @@ $("follow").onclick = e => { prefs.follow = !prefs.follow; savePrefs();
   e.target.classList.toggle("on", prefs.follow); };
 $("fit").onclick = () => { prefs.follow = false; savePrefs();
   $("follow").classList.remove("on"); fitAll(); };
+$("wpClear").onclick = () => { prefs.waypoint = null; savePrefs(); drawWaypoint(); };
+$("mini").onclick = () => setMini(!prefs.mini);
+function setMini(on) {
+  prefs.mini = on; savePrefs();
+  document.body.classList.toggle("mini", on);
+  $("mini").classList.toggle("on", on);
+  if (on) {
+    $("panels").classList.remove("show");
+    $("layers").classList.remove("on");
+    prefs.follow = true; $("follow").classList.add("on");
+    post({ action: "resize", w: 340, h: 340 });
+    const mine = lastPlayers.find(p => p.name === me);
+    if (mine && map) map.setView(toLatLng(mine.location_x, mine.location_y), MINI_ZOOM);
+  } else {
+    post({ action: "resize", w: 640, h: 700 });
+  }
+  setTimeout(() => { map && map.invalidateSize(); updateScale(); }, 120);
+}
 $("layers").onclick = e => { const s = $("panels").classList.toggle("show");
   e.target.classList.toggle("on", s); if (s) buildGroups(); };
 $("search").oninput = buildGroups;
@@ -362,16 +602,19 @@ $("op").oninput = e => { prefs.opacity = +e.target.value; savePrefs();
   MAPS = await (await fetch("data/maps.json")).json();
   FILTERS = await (await fetch("data/filters.json")).json();
   for (const g of FILTERS) for (const v of g.values) TYPEMETA[v.id] = v;
-  for (const id of Object.keys(MAPS))
-    NODES[id] = await (await fetch(`data/nodes.${id}.json`)).json();
+  // node sets load on demand - there are 164 maps and preloading them all
+  // would pull several MB before the first frame
 
   $("follow").classList.toggle("on", prefs.follow);
   $("op").value = prefs.opacity;
   $("map").style.opacity = prefs.opacity / 100;
 
-  buildMap(MAPS.default ? "default" : Object.keys(MAPS)[0]);
-  setMode(prefs.mapMode);
+  await buildMap(MAPS.default ? "default" : Object.keys(MAPS)[0]);
+  await setMode(prefs.mapMode);
+  if (prefs.mini) setMini(true);
   await tick();
+  tickStatus();
+  setInterval(tickStatus, 5000);
   let cfg = {};
   try { cfg = await (await fetch("/api/config")).json(); } catch { /* defaults */ }
   setInterval(tick, Math.max(400, cfg.poll_ms || 1000));

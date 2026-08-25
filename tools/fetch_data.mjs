@@ -15,7 +15,9 @@ import { fileURLToPath } from "node:url";
 const CDN = "https://cdn.th.gl/palworld";
 const OUT = join(dirname(fileURLToPath(import.meta.url)), "..", "data");
 // Which maps to pull. Palpagos + World Tree are the two overworlds.
-const MAPS = (process.argv[2] || "default,tree").split(",");
+// "all" pulls every map including the ~160 dungeon interiors, which is what
+// lets the overlay follow you inside a dungeon.
+const ARG = process.argv[2] || "all";
 const enc = new Encoder({ useRecords: true, pack: true });
 
 const getJson = async (p) => {
@@ -35,6 +37,8 @@ console.log("version.json ...");
 const version = await getJson("/version.json");
 const { tiles, filters } = version.data;
 const nodePaths = version.more.nodes;
+const MAPS = ARG === "all" ? Object.keys(tiles) : ARG.split(",");
+console.log(`maps to fetch: ${MAPS.length}`);
 
 console.log("dicts/en.json ...");
 const dict = await getJson("/dicts/en.json");
@@ -47,10 +51,10 @@ const label = (id) => {
 
 // ---- per-map tile config + node spawns -----------------------------------
 const maps = {};
-for (const m of MAPS) {
-  if (!tiles[m]) { console.warn(`  ! no tile config for "${m}", skipping`); continue; }
+let done = 0;
+async function pull(m) {
+  if (!tiles[m] || !nodePaths[m]) { console.warn(`  ! no config for "${m}", skipping`); return; }
   const t = tiles[m];
-  console.log(`nodes/${m} ...`);
   const groups = enc.decode(await getBuf(nodePaths[m]));
 
   const types = {};
@@ -68,6 +72,19 @@ for (const m of MAPS) {
   }
   const count = Object.values(types).reduce((a, v) => a + v.length, 0);
 
+  // real extent of the content, which is much tighter than the tile bounds and
+  // is what distinguishes "standing in the ocean" from "inside an instance"
+  let cb = null;
+  for (const pts of Object.values(types)) {
+    for (const p of pts) {
+      if (!cb) cb = [[p[0], p[1]], [p[0], p[1]]];
+      if (p[0] < cb[0][0]) cb[0][0] = p[0];
+      if (p[1] < cb[0][1]) cb[0][1] = p[1];
+      if (p[0] > cb[1][0]) cb[1][0] = p[0];
+      if (p[1] > cb[1][1]) cb[1][1] = p[1];
+    }
+  }
+
   maps[m] = {
     id: m,
     label: label(m),
@@ -79,17 +96,27 @@ for (const m of MAPS) {
     maxZoom: t.maxZoom,
     bounds: t.options.bounds,          // [[latMin,lngMin],[latMax,lngMax]] raw coords
     transformation: t.transformation,  // [a, b, c, d] -> Leaflet L.Transformation
+    contentBounds: cb,
+    spawnCount: count,
+    // tile-bounds area, used to pick the most specific map containing a point
+    area: Math.abs((t.options.bounds[1][0] - t.options.bounds[0][0]) *
+                   (t.options.bounds[1][1] - t.options.bounds[0][1])),
   };
   writeFileSync(join(OUT, `nodes.${m}.json`), JSON.stringify({ map: m, types }));
-  console.log(`  ${m}: ${Object.keys(types).length} types, ${count} spawns`);
+  if (++done % 25 === 0 || MAPS.length < 10)
+    console.log(`  ${done}/${MAPS.length} ... ${m}: ${count} spawns`);
 }
+
+// modest concurrency; the CDN is fine with it and 164 serial fetches is slow
+for (let i = 0; i < MAPS.length; i += 8)
+  await Promise.all(MAPS.slice(i, i + 8).map(pull));
 writeFileSync(join(OUT, "maps.json"), JSON.stringify(maps, null, 1));
 
 // ---- filter groups, labelled, restricted to types we actually have -------
+const { readFileSync } = await import("node:fs");
 const present = new Set();
 for (const m of Object.keys(maps)) {
-  const n = JSON.parse(
-    (await import("node:fs")).readFileSync(join(OUT, `nodes.${m}.json`), "utf8"));
+  const n = JSON.parse(readFileSync(join(OUT, `nodes.${m}.json`), "utf8"));
   Object.keys(n.types).forEach((t) => present.add(t));
 }
 const outFilters = [];

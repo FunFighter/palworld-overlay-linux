@@ -23,37 +23,41 @@ def load_cfg():
 
 
 class Poller(threading.Thread):
-    """Polls the game server so many browser clients cost one upstream request."""
+    """Polls one REST endpoint so many browser clients cost one upstream request."""
 
     daemon = True
 
-    def __init__(self):
+    def __init__(self, endpoint, period_key=None, fixed_period=None):
         super().__init__()
-        self.latest = {"players": [], "ts": 0, "error": None}
+        self.endpoint = endpoint
+        self.period_key = period_key
+        self.fixed_period = fixed_period
+        self.latest = {"data": None, "ts": 0, "error": None}
 
     def run(self):
         while True:
             try:
                 cfg = load_cfg()
-                url = cfg["rest_url"].rstrip("/") + "/v1/api/players"
+                url = cfg["rest_url"].rstrip("/") + self.endpoint
                 auth = base64.b64encode(
                     f"{cfg['rest_user']}:{cfg['rest_pass']}".encode()).decode()
                 req = urllib.request.Request(
                     url, headers={"Authorization": "Basic " + auth})
                 with urllib.request.urlopen(req, timeout=6) as r:
                     data = json.load(r)
-                self.latest = {"players": data.get("players", []),
-                               "ts": time.time(), "error": None}
-                delay = cfg.get("poll_ms", 1000) / 1000
+                self.latest = {"data": data, "ts": time.time(), "error": None}
+                delay = self.fixed_period or cfg.get(self.period_key, 1000) / 1000
             except Exception as e:
-                self.latest = {"players": self.latest.get("players", []),
+                self.latest = {"data": self.latest.get("data"),
                                "ts": self.latest.get("ts", 0),
                                "error": f"{type(e).__name__}: {e}"}
-                delay = 2.0
+                delay = 2.0 if self.fixed_period is None else self.fixed_period
             time.sleep(max(0.25, delay))
 
 
-POLLER = Poller()
+PLAYERS = Poller("/v1/api/players", period_key="poll_ms")
+METRICS = Poller("/v1/api/metrics", fixed_period=5.0)
+INFO = Poller("/v1/api/info", fixed_period=60.0)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -74,9 +78,18 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split("?")[0]
         if path == "/api/players":
-            out = dict(POLLER.latest)
-            out["me"] = load_cfg().get("me")
-            return self._json(200, out)
+            L = PLAYERS.latest
+            return self._json(200, {
+                "players": (L["data"] or {}).get("players", []),
+                "ts": L["ts"], "error": L["error"],
+                "me": load_cfg().get("me"),
+            })
+        if path == "/api/status":
+            return self._json(200, {
+                "metrics": METRICS.latest["data"], "info": INFO.latest["data"],
+                "ts": METRICS.latest["ts"],
+                "error": METRICS.latest["error"] or INFO.latest["error"],
+            })
         if path == "/api/config":
             cfg = load_cfg()
             return self._json(200, {"me": cfg.get("me"),
@@ -105,7 +118,9 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    POLLER.start()
+    PLAYERS.start()
+    METRICS.start()
+    INFO.start()
     port = load_cfg().get("listen_port", 8765)
     print(f"Palworld live map on http://127.0.0.1:{port}", flush=True)
     ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
