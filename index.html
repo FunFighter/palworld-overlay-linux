@@ -405,19 +405,13 @@ async function tick() {
 
   const mine = lastPlayers.find(p => p.name === me);
   const where = mapForPlayer(mine);
-  if (mine && !where) {
-    const b = $("offmap");
-    b.style.display = ""; b.textContent = "off-map";
-    b.title = "Your coordinates are not inside any of the 164 known maps - "
-            + "usually a loading screen or an unmapped instance.";
-  }
   if (prefs.mapMode === "auto" && where && where !== curMap && !switching) {
     switching = true;
     try { await buildMap(where); } finally { switching = false; }
   }
   drawPlayers(lastPlayers);
 
-  updateNav(mine);
+  updateNav(mine, where);
 
   $("plist").innerHTML = lastPlayers.map(p => {
     const on = inBounds(MAPS[curMap], p.location_x, p.location_y);
@@ -426,7 +420,7 @@ async function tick() {
   }).join("") || '<span style="color:var(--dim)">nobody online</span>';
 }
 
-function updateNav(mine) {
+function updateNav(mine, where) {
   const has = mine && inBounds(MAPS[curMap], mine.location_x, mine.location_y);
   $("coords").textContent = has
     ? `${Math.round(mine.location_x)}, ${Math.round(mine.location_y)}` : "--";
@@ -443,19 +437,25 @@ function updateNav(mine) {
                                    toLatLng(w.x, w.y)]);
   }
 
-  // out past the drawn edge of the map?
-  const far = has ? nearestAny(mine.location_x, mine.location_y) : 0;
-  const off = has && far > OFFMAP_UNITS;
+  // Badge state is recomputed from scratch every tick - three cases only.
   const badge = $("offmap");
-  if (off) {
-    badge.style.display = "";
-    badge.textContent = `off the drawn map · ${fmtDist(far)} to nearest feature`;
-    badge.title = "The map tiles end here. Your position is correct; there is "
-                + "simply nothing drawn this far out.";
-  } else if (badge.textContent === "off-map") {
-    // left as-is: the no-containing-map case is set in tick()
-  } else {
+  if (!mine) {
     badge.style.display = "none";
+  } else if (!where) {
+    badge.style.display = "";
+    badge.textContent = "off-map";
+    badge.title = "These coordinates are not inside any of the 164 known maps - "
+                + "usually a loading screen or an unmapped instance.";
+  } else {
+    const far = has ? nearestAny(mine.location_x, mine.location_y) : Infinity;
+    if (has && far > OFFMAP_UNITS) {
+      badge.style.display = "";
+      badge.textContent = `off the drawn map · ${fmtDist(far)} to nearest feature`;
+      badge.title = "The map tiles end here. Your position is correct; there is "
+                  + "simply nothing drawn this far out.";
+    } else {
+      badge.style.display = "none";
+    }
   }
 
   // nearest enabled marker
