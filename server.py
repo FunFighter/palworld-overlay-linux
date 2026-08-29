@@ -51,7 +51,10 @@ class Poller(threading.Thread):
                 self.latest = {"data": self.latest.get("data"),
                                "ts": self.latest.get("ts", 0),
                                "error": f"{type(e).__name__}: {e}"}
-                delay = 2.0 if self.fixed_period is None else self.fixed_period
+                # Retry soon after a failure rather than waiting out a long
+                # cadence - otherwise one blip during a server restart leaves a
+                # stale error showing for a full period.
+                delay = 2.0 if self.fixed_period is None else min(self.fixed_period, 5.0)
             time.sleep(max(0.25, delay))
 
 
