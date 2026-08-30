@@ -103,9 +103,12 @@
 
   <div id="panels">
     <input id="search" placeholder="Filter types… (e.g. dungeon, chest, alpha)">
-    <div class="sp" style="display:flex;gap:5px;margin-bottom:7px">
+    <div style="display:flex;gap:5px;margin-bottom:7px;flex-wrap:wrap">
       <button id="pDg">Dungeons only</button>
       <button id="pNone">Clear all</button>
+      <button id="collected">Collected: hide</button>
+      <button id="autoCol">Auto-mark: off</button>
+      <button id="pReset" class="warn">Reset collected</button>
     </div>
     <div id="groups"></div>
   </div>
@@ -144,7 +147,7 @@
   </div>
 </div>
 <div id="scale"><span id="scaleTxt">--</span><div id="scaleBar" style="width:80px"></div></div>
-<div id="hint">Alt + right-drag to move · Alt + Shift + right-drag to resize · Shift + click to set a waypoint</div>
+<div id="hint">Alt + right-drag to move · Alt + Shift + right-drag to resize · Shift + click for a waypoint · click a marker to mark it collected</div>
 
 <script src="vendor/leaflet.js"></script>
 <script>
@@ -154,7 +157,8 @@ const LS = "pwlm.v2";
 const saved = (() => { try { return JSON.parse(localStorage.getItem(LS)) || {}; } catch { return {}; } })();
 const prefs = Object.assign({ mapMode: "auto", enabled: null, follow: true,
                              opacity: 100, waypoint: null, mini: false,
-                             layersOpen: false }, saved);
+                             layersOpen: false, collected: [], collectedMode: "hide",
+                             autoCollect: false }, saved);
 const savePrefs = () => localStorage.setItem(LS, JSON.stringify(prefs));
 
 let MAPS = {}, FILTERS = [], NODES = {}, TYPEMETA = {};
@@ -187,6 +191,39 @@ function fmtUptime(sec) {
 }
 function fitAll() { if (map && curMap) map.fitBounds(MAPS[curMap].bounds); }
 let enabled = new Set(prefs.enabled || DEFAULT_ON);
+
+// ---- collected markers ---------------------------------------------------
+// The server cannot tell us what you have picked up: the save records obtained
+// relics as opaque GUIDs with no coordinates, and those GUIDs appear nowhere in
+// Level.sav, so there is no join to a map position. Only the game client knows.
+// So we track it ourselves, keyed on type + rounded position.
+let collected = new Set(prefs.collected || []);
+// Exact stored coordinates, not rounded: the same JSON supplies both the
+// render and the click, so string equality is exact and there are no
+// half-value rounding edge cases.
+const ckey = (type, p) => `${type}@${p[0]},${p[1]}`;
+// one-time pickups worth auto-marking when you walk over them
+const AUTO_TYPES = /^(lifmunk_effigy|effigy_|kinship_peach|skill_fruit|note$|treasure_box|treasure_map)/;
+const AUTO_RADIUS = 1500;   // 15 m in raw units
+
+function saveCollected() { prefs.collected = [...collected]; savePrefs(); }
+
+function toggleCollected(type, p) {
+  const k = ckey(type, p);
+  collected.has(k) ? collected.delete(k) : collected.add(k);
+  saveCollected();
+  renderTypes();
+  updateCollectedBtn();
+}
+
+function updateCollectedBtn() {
+  const b = $("collected");
+  if (!b) return;
+  const mode = prefs.collectedMode;
+  b.textContent = `Collected: ${mode}`;
+  b.classList.toggle("on", mode !== "show");
+  b.title = `${collected.size} marked collected · click to cycle show / fade / hide`;
+}
 
 // ---- exact CRS from TH.GL's published per-map transformation --------------
 async function ensureNodes(id) {
@@ -283,12 +320,17 @@ function renderTypes() {
     const big = pts.length > 200;
     const layer = L.layerGroup();
     for (const p of pts) {
+      const done = collected.has(ckey(t, p));
+      if (done && prefs.collectedMode === "hide") continue;
+      const dim = done && prefs.collectedMode === "fade";
       const ll = toLatLng(p[0], p[1]);
       const mk = big
         ? L.circleMarker(ll, { renderer: rend, radius: 3, weight: 1,
-            color: "#0b0e13", fillColor: "#f0b429", fillOpacity: .95 })
-        : L.marker(ll, { icon: spriteIcon(meta, Math.round(13 * (meta?.size || 1))) });
-      mk.bindTooltip(meta?.label || t, { direction: "top" });
+            color: "#0b0e13", fillColor: "#f0b429", fillOpacity: dim ? .25 : .95 })
+        : L.marker(ll, { opacity: dim ? .3 : 1,
+            icon: spriteIcon(meta, Math.round(13 * (meta?.size || 1))) });
+      mk.bindTooltip(`${meta?.label || t}${done ? " · collected" : ""}`, { direction: "top" });
+      mk.on("click", () => toggleCollected(t, p));
       layer.addLayer(mk);
     }
     layer.addTo(map);
@@ -330,6 +372,7 @@ function nearestPoi(px, py) {
     const pts = types[t];
     if (!pts) continue;
     for (const q of pts) {
+      if (collected.has(ckey(t, q))) continue;
       const d = dist2d(px, py, q[0], q[1]);
       if (!best || d < best.d) best = { d, x: q[0], y: q[1], type: t };
     }
@@ -427,6 +470,22 @@ async function tick() {
   }).join("") || '<span style="color:var(--dim)">nobody online</span>';
 }
 
+function autoCollectNear(px, py) {
+  if (!prefs.autoCollect) return;
+  const types = NODES[curMap]?.types || {};
+  let changed = false;
+  for (const t of enabled) {
+    if (!AUTO_TYPES.test(t)) continue;
+    for (const q of (types[t] || [])) {
+      if (Math.abs(q[0] - px) > AUTO_RADIUS || Math.abs(q[1] - py) > AUTO_RADIUS) continue;
+      if (dist2d(px, py, q[0], q[1]) > AUTO_RADIUS) continue;
+      const k = ckey(t, q);
+      if (!collected.has(k)) { collected.add(k); changed = true; }
+    }
+  }
+  if (changed) { saveCollected(); renderTypes(); updateCollectedBtn(); }
+}
+
 function updateNav(mine, where) {
   const has = mine && inBounds(MAPS[curMap], mine.location_x, mine.location_y);
   $("coords").textContent = has
@@ -466,6 +525,8 @@ function updateNav(mine, where) {
   }
 
   // nearest enabled marker
+  if (has) autoCollectNear(mine.location_x, mine.location_y);
+
   const n = has ? nearestPoi(mine.location_x, mine.location_y) : null;
   if (n) {
     const b = bearing(mine.location_x, mine.location_y, n.x, n.y);
@@ -609,6 +670,21 @@ function setLayersOpen(open) {
   if (open) buildGroups();
 }
 $("search").oninput = buildGroups;
+const COLLECTED_MODES = ["show", "fade", "hide"];
+$("collected").onclick = () => {
+  const i = COLLECTED_MODES.indexOf(prefs.collectedMode);
+  prefs.collectedMode = COLLECTED_MODES[(i + 1) % COLLECTED_MODES.length];
+  savePrefs(); updateCollectedBtn(); renderTypes();
+};
+$("autoCol").onclick = () => {
+  prefs.autoCollect = !prefs.autoCollect; savePrefs();
+  $("autoCol").textContent = `Auto-mark: ${prefs.autoCollect ? "on" : "off"}`;
+  $("autoCol").classList.toggle("on", prefs.autoCollect);
+};
+$("pReset").onclick = () => {
+  if (!collected.size) return;
+  collected.clear(); saveCollected(); renderTypes(); updateCollectedBtn();
+};
 $("pDg").onclick = () => { enabled = new Set(DEFAULT_ON); prefs.enabled = [...enabled];
   savePrefs(); renderTypes(); buildGroups(); };
 $("pNone").onclick = () => { enabled = new Set(); prefs.enabled = [];
@@ -658,6 +734,9 @@ $("op").oninput = e => { prefs.opacity = +e.target.value; savePrefs();
   await buildMap(MAPS.default ? "default" : Object.keys(MAPS)[0]);
   await setMode(prefs.mapMode);
   if (prefs.mini) setMini(true);
+  updateCollectedBtn();
+  $("autoCol").textContent = `Auto-mark: ${prefs.autoCollect ? "on" : "off"}`;
+  $("autoCol").classList.toggle("on", prefs.autoCollect);
   if (prefs.layersOpen || location.hash === "#layers") setLayersOpen(true);
   await tick();
   tickStatus();
