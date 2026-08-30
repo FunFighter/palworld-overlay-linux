@@ -69,6 +69,12 @@
   .arrow { color:var(--me); font-size:13px; line-height:1; }
   .wp-dot { width:11px; height:11px; border-radius:50%; background:#fbbf24;
             border:2px solid #05070a; box-shadow:0 0 0 2px rgba(251,191,36,.35); }
+  summary input[type=checkbox], .grow input[type=checkbox] { accent-color:var(--acc); margin:0; }
+  .grow { border-top:1px solid var(--line); }
+  .grow label { display:flex; align-items:center; gap:6px; padding:5px 2px;
+                font-size:12px; color:var(--dim); cursor:pointer; }
+  .grow label.on { color:var(--fg); }
+  .grow label .n { margin-left:auto; color:var(--dim); font-size:11px; }
   #scale { position:absolute; left:10px; bottom:24px; z-index:600;
            font:10.5px ui-monospace,monospace; color:#c6d0da; pointer-events:none;
            text-shadow:0 1px 2px #000; }
@@ -147,7 +153,8 @@ const post = m => window.webkit?.messageHandlers?.overlay?.postMessage(JSON.stri
 const LS = "pwlm.v2";
 const saved = (() => { try { return JSON.parse(localStorage.getItem(LS)) || {}; } catch { return {}; } })();
 const prefs = Object.assign({ mapMode: "auto", enabled: null, follow: true,
-                             opacity: 100, waypoint: null, mini: false }, saved);
+                             opacity: 100, waypoint: null, mini: false,
+                             layersOpen: false }, saved);
 const savePrefs = () => localStorage.setItem(LS, JSON.stringify(prefs));
 
 let MAPS = {}, FILTERS = [], NODES = {}, TYPEMETA = {};
@@ -489,6 +496,18 @@ async function tickStatus() {
 }
 
 // ---- layers UI ----------------------------------------------------------
+// Groups where per-type toggles are meaningless - every member is a single
+// unique spawn, so you either want the whole set on the map or none of it.
+const ATOMIC_GROUPS = new Set(["pal_npc"]);
+
+function setGroupEnabled(vals, on) {
+  for (const v of vals) on ? enabled.add(v.id) : enabled.delete(v.id);
+  prefs.enabled = [...enabled];
+  savePrefs();
+  renderTypes();
+  buildGroups();
+}
+
 function buildGroups() {
   const host = $("groups");
   host.innerHTML = "";
@@ -498,10 +517,32 @@ function buildGroups() {
       (!q || v.label.toLowerCase().includes(q) || v.id.toLowerCase().includes(q)));
     if (!vals.length) continue;
     const nOn = vals.filter(v => enabled.has(v.id)).length;
+    const allOn = nOn === vals.length, someOn = nOn > 0 && !allOn;
+    const spawns = vals.reduce((a, v) => a + typeCount(v.id), 0);
+
+    // all-or-nothing: one switch, no child list
+    if (ATOMIC_GROUPS.has(g.group)) {
+      const row = document.createElement("div");
+      row.className = "grow";
+      row.innerHTML = `<label class="${allOn ? "on" : ""}">
+        <input type="checkbox" ${allOn ? "checked" : ""}>
+        <b>${g.label}</b><span class="n">${spawns}</span></label>`;
+      const box = row.querySelector("input");
+      box.indeterminate = someOn;
+      box.onchange = e => setGroupEnabled(vals, e.target.checked);
+      host.appendChild(row);
+      continue;
+    }
+
     const det = document.createElement("details");
     if (q || g.group === "locations") det.open = true;
-    det.innerHTML = `<summary><b>${g.label}</b>
+    det.innerHTML = `<summary><input type="checkbox" ${allOn ? "checked" : ""}><b>${g.label}</b>
       <span class="n">${nOn ? nOn + " on / " : ""}${vals.length}</span></summary>`;
+    const master = det.querySelector("summary input");
+    master.indeterminate = someOn;
+    // don't let the checkbox open/close the <details>
+    master.onclick = e => e.stopPropagation();
+    master.onchange = e => setGroupEnabled(vals, e.target.checked);
     const wrap = document.createElement("div");
     wrap.className = "types";
     for (const v of vals) {
@@ -560,8 +601,13 @@ function setMini(on) {
   }
   setTimeout(() => { map && map.invalidateSize(); updateScale(); }, 120);
 }
-$("layers").onclick = e => { const s = $("panels").classList.toggle("show");
-  e.target.classList.toggle("on", s); if (s) buildGroups(); };
+$("layers").onclick = () => setLayersOpen(!prefs.layersOpen);
+function setLayersOpen(open) {
+  prefs.layersOpen = open; savePrefs();
+  $("panels").classList.toggle("show", open);
+  $("layers").classList.toggle("on", open);
+  if (open) buildGroups();
+}
 $("search").oninput = buildGroups;
 $("pDg").onclick = () => { enabled = new Set(DEFAULT_ON); prefs.enabled = [...enabled];
   savePrefs(); renderTypes(); buildGroups(); };
@@ -612,6 +658,7 @@ $("op").oninput = e => { prefs.opacity = +e.target.value; savePrefs();
   await buildMap(MAPS.default ? "default" : Object.keys(MAPS)[0]);
   await setMode(prefs.mapMode);
   if (prefs.mini) setMini(true);
+  if (prefs.layersOpen || location.hash === "#layers") setLayersOpen(true);
   await tick();
   tickStatus();
   setInterval(tickStatus, 5000);

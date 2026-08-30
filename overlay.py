@@ -53,12 +53,14 @@ class Overlay:
     def __init__(self, args):
         self.args = args
         st = load_state()
-        self.w = int(st.get("width", args.width))
-        self.h = int(st.get("height", args.height))
-        self.anchor = st.get("anchor", args.anchor)
-        # margins from the two anchored edges
-        self.mx = int(st.get("mx", args.margin))   # left or right
-        self.my = int(st.get("my", args.margin))   # top or bottom
+        # an explicitly passed flag wins over the remembered geometry
+        pick = lambda cli, key, dflt: dflt if cli is None and key not in st \
+            else (cli if cli is not None else st[key])
+        self.w = int(pick(args.width, "width", 640))
+        self.h = int(pick(args.height, "height", 700))
+        self.anchor = pick(args.anchor, "anchor", "top-right")
+        self.mx = int(pick(args.margin, "mx", 16))   # left or right
+        self.my = int(pick(args.margin, "my", 16))   # top or bottom
 
         self.win = Gtk.Window()
         self.win.set_default_size(self.w, self.h)
@@ -166,10 +168,11 @@ class Overlay:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", default="http://127.0.0.1:8765")
-    ap.add_argument("--width", type=int, default=640)
-    ap.add_argument("--height", type=int, default=700)
-    ap.add_argument("--anchor", default="top-right", choices=list(EDGES))
-    ap.add_argument("--margin", type=int, default=16)
+    # default None so we can tell "not passed" from "passed the default"
+    ap.add_argument("--width", type=int)
+    ap.add_argument("--height", type=int)
+    ap.add_argument("--anchor", choices=list(EDGES))
+    ap.add_argument("--margin", type=int)
     ap.add_argument("--layer", default="overlay", choices=["overlay", "top"])
     ap.add_argument("--click-through", action="store_true",
                     help="pointer events pass straight to the game")
