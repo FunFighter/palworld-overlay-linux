@@ -170,6 +170,7 @@ systemctl --user enable --now palworld-rest-tunnel
 | | |
 |---|---|
 | `Meta+P` | show / hide the overlay |
+| **×** (top right) | close the overlay; reopen with `Meta+P` or the menu entry |
 | **Alt + right-drag** | move the box |
 | **Alt + Shift + right-drag** | resize the box |
 | `Auto` / `Palpagos` / `World Tree` | map selection; Auto follows the map you are on |
@@ -190,6 +191,13 @@ you get **off the drawn map** with the distance back to the nearest feature,
 rather than an unexplained black square.
 
 Position, size and layer choices persist across restarts.
+
+The × stays visible in Mini mode, where the other controls are hidden, so you
+can always get out of it.
+
+If the server becomes unreachable the header shows `offline` and the status row
+dims and reads "last known values" — the figures shown are the last ones
+received, never presented as live.
 
 ## How it works
 

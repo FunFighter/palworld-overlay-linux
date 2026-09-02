@@ -30,6 +30,18 @@ EDGES = {
     "bottom-right": (False, True,  False, True),
 }
 STATE = os.path.expanduser("~/.local/share/palworld-live-map/window.json")
+PIDFILE = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "palworld-overlay.pid")
+
+
+def clear_pidfile():
+    """The launcher writes its own pid here and execs us, so we own it. Removing
+    it on exit keeps the toggle honest after the window closes itself."""
+    try:
+        with open(PIDFILE) as f:
+            if int(f.read().strip()) == os.getpid():
+                os.remove(PIDFILE)
+    except Exception:
+        pass
 
 
 def load_state():
@@ -181,6 +193,8 @@ def main():
     if not GtkLayerShell.is_supported():
         sys.exit("layer-shell not supported (need a native Wayland session)")
 
+    import atexit
+    atexit.register(clear_pidfile)
     Overlay(args)
     Gtk.main()
 
