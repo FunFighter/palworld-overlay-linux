@@ -15,7 +15,8 @@
   #hud { position:absolute; top:8px; left:8px; right:8px; z-index:600;
          background:var(--panel); border:1px solid var(--line); border-radius:9px;
          backdrop-filter:blur(9px); }
-  #bar { display:flex; align-items:center; gap:7px; padding:7px 9px; }
+  #bar { display:flex; align-items:center; gap:6px; padding:7px 9px; flex-wrap:wrap; }
+  #bar > * { flex:none; }
   #bar b { font-size:12px; }
   #dot { width:8px; height:8px; border-radius:50%; background:var(--warn); flex:none; }
   #dot.ok { background:var(--me); }
@@ -78,6 +79,11 @@
                 font-size:12px; color:var(--dim); cursor:pointer; }
   .grow label.on { color:var(--fg); }
   .grow label .n { margin-left:auto; color:var(--dim); font-size:11px; }
+  #grip { position:absolute; right:0; bottom:0; width:20px; height:20px; z-index:700;
+          cursor:nwse-resize; opacity:.55;
+          background:linear-gradient(135deg, transparent 0 52%, var(--dim) 52% 60%,
+                     transparent 60% 70%, var(--dim) 70% 78%, transparent 78%); }
+  #grip:hover { opacity:1; }
   #scale { position:absolute; left:10px; bottom:24px; z-index:600;
            font:10.5px ui-monospace,monospace; color:#c6d0da; pointer-events:none;
            text-shadow:0 1px 2px #000; }
@@ -150,8 +156,9 @@
     <input type="range" id="op" min="30" max="100" value="100" title="Opacity">
   </div>
 </div>
+<div id="grip" title="Drag to resize"></div>
 <div id="scale"><span id="scaleTxt">--</span><div id="scaleBar" style="width:80px"></div></div>
-<div id="hint">Alt + right-drag to move · Alt + Shift + right-drag to resize · Shift + click for a waypoint · click a marker to mark it collected</div>
+<div id="hint">Alt + right-drag to move · drag the corner to resize · Shift + click for a waypoint · click a marker to mark it collected</div>
 
 <script src="vendor/leaflet.js"></script>
 <script>
@@ -669,7 +676,7 @@ function setMini(on) {
     const mine = lastPlayers.find(p => p.name === me);
     if (mine && map) map.setView(toLatLng(mine.location_x, mine.location_y), MINI_ZOOM);
   } else {
-    post({ action: "resize", w: 640, h: 700 });
+    post({ action: "resize", w: 680, h: 760 });
   }
   setTimeout(() => { map && map.invalidateSize(); updateScale(); }, 120);
 }
@@ -730,6 +737,27 @@ $("op").oninput = e => { prefs.opacity = +e.target.value; savePrefs();
   }, true);
 })();
 
+// ---- drag the corner grip to resize -------------------------------------
+(() => {
+  let on = false, w = 0, h = 0;
+  $("grip").addEventListener("mousedown", e => {
+    e.preventDefault(); e.stopPropagation();
+    on = true; w = innerWidth; h = innerHeight;
+    document.body.style.cursor = "nwse-resize";
+  }, true);
+  addEventListener("mousemove", e => {
+    if (!on) return;
+    e.preventDefault();
+    w += e.movementX; h += e.movementY;
+    post({ action: "resize", w: Math.max(320, Math.round(w)),
+                             h: Math.max(260, Math.round(h)) });
+  }, true);
+  addEventListener("mouseup", () => {
+    if (!on) return;
+    on = false; document.body.style.cursor = "";
+  }, true);
+})();
+
 // ---- boot ---------------------------------------------------------------
 (async () => {
   MAPS = await (await fetch("data/maps.json")).json();
@@ -745,6 +773,10 @@ $("op").oninput = e => { prefs.opacity = +e.target.value; savePrefs();
   await buildMap(MAPS.default ? "default" : Object.keys(MAPS)[0]);
   await setMode(prefs.mapMode);
   if (prefs.mini) setMini(true);
+  // Guard against stranded geometry: the full toolbar needs room, so if we
+  // somehow start small without being in mini mode, grow back to a usable size.
+  else if (innerWidth < 560 || innerHeight < 420)
+    post({ action: "resize", w: 680, h: 760 });
   updateCollectedBtn();
   $("autoCol").textContent = `Auto-mark: ${prefs.autoCollect ? "on" : "off"}`;
   $("autoCol").classList.toggle("on", prefs.autoCollect);

@@ -172,7 +172,8 @@ systemctl --user enable --now palworld-rest-tunnel
 | `Meta+P` | show / hide the overlay |
 | **×** (top right) | close the overlay; reopen with `Meta+P` or the menu entry |
 | **Alt + right-drag** | move the box |
-| **Alt + Shift + right-drag** | resize the box |
+| **drag the bottom-right corner** | resize the box |
+| **Alt + Shift + right-drag** | resize the box (alternative) |
 | `Auto` / `Palpagos` / `World Tree` | map selection; Auto follows the map you are on |
 | `Follow` | keep the view centred on you |
 | `Fit` | zoom out to the whole map |
